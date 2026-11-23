@@ -106,9 +106,11 @@ python3 scripts/audioalign.py 视频.mp4 校对版.srt \
 python3 scripts/srt2pr.py 对齐版.srt \
     --template 模版.prproj \
     --workdir 交付 \
-    --out 交付.prproj \
+    --out 交付/第一组.prproj \
     --fps 25 --sequence-name "字幕 第一组" --join 0.2
 ```
+
+`--workdir` 是白名单根目录，`--out` 必须落在里面，否则直接拒绝。
 
 或者一步到位（对齐 + 导出）：
 
