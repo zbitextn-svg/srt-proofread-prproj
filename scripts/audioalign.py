@@ -29,6 +29,7 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
+from safety import Guard, SafetyError, fail
 from srtlib import Cue, load_srt, save_srt, fmt_time, stats, join_small_gaps
 
 FRAME_MS = 10
@@ -278,7 +279,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--max-shift", type=float, default=0.25, help="最大吸附位移（秒）")
     ap.add_argument("--join", type=float, default=0.20, help="≤该间隔直接连上，0 表示不连")
     ap.add_argument("--split-suggest", action="store_true", help="顺带提示条内气口")
+    # --- 安全边界 ---
+    ap.add_argument(
+        "--workdir", default=None, help="写入白名单目录，默认取输入字幕所在目录"
+    )
+    ap.add_argument(
+        "--approve-overwrite",
+        action="store_true",
+        help="批准覆盖已存在且非本工具生成的文件（无人值守时才用）",
+    )
+    ap.add_argument(
+        "--interactive",
+        action="store_true",
+        help="覆盖陌生文件时在终端当场询问（只在人操作时用，agent 别加）",
+    )
     args = ap.parse_args(argv)
+
+    try:
+        guard = Guard.build(
+            workdir=args.workdir,
+            primary_input=args.srt,
+            inputs=[args.media],
+            approve=args.approve_overwrite,
+            interactive=args.interactive,
+        )
+        srt_out = guard.check_output(args.out, what="字幕输出") if args.out else None
+        report_path = guard.check_output(args.report, what="报告输出") if args.report else None
+    except SafetyError as err:
+        return fail(err, "audioalign")
 
     cues = load_srt(args.srt)
     if not cues:
@@ -302,15 +330,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     splits = suggest_splits(new_cues, db) if args.split_suggest else []
     md = report_md(new_cues, results, notes, splits, args.fps)
-    if args.report:
-        with open(args.report, "w", encoding="utf-8") as fh:
+    written = []
+    if report_path:
+        with open(report_path, "w", encoding="utf-8") as fh:
             fh.write(md)
-        print("报告 → %s" % args.report, file=sys.stderr)
+        print("报告 → %s" % report_path, file=sys.stderr)
+        written.append(report_path)
     else:
         print(md)
-    if args.out:
-        save_srt(new_cues, args.out)
-        print("字幕 → %s（连上 %d 处）" % (args.out, joined), file=sys.stderr)
+    if srt_out:
+        save_srt(new_cues, srt_out)
+        print("字幕 → %s（连上 %d 处）" % (srt_out, joined), file=sys.stderr)
+        written.append(srt_out)
+
+    try:
+        if written:
+            guard.log("audioalign", args=vars(args), outputs=written, note="joined %d" % joined)
+        guard.verify_inputs_untouched()
+    except SafetyError as err:
+        return fail(err, "audioalign")
+    if written:
+        print("变更日志 → %s" % guard.log_path, file=sys.stderr)
     return 0
 
 

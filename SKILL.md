@@ -27,6 +27,24 @@ description: 校对 SRT/CSV 字幕唱词并导出 Premiere Pro 工程（.prproj�
 
 **永远不要只交一个 SRT。** 没有修改清单，用户无法确认你改了什么。
 
+## 权限边界（先读这条）
+
+字幕往往是用户唯一的原始素材。脚本内置了硬边界，违反了会直接拒绝执行
+（退出码 3），不会"尽力而为"：
+
+- **只能写进 workdir**。默认是输入字幕所在目录，用 `--workdir` 改。
+  输出跑到白名单外、或指向 `/`、`~`、`~/Downloads` 这类位置，一律拒绝。
+- **不许覆盖输入**。输出路径等于任何输入文件（字幕、模版、音视频）时直接报错。
+  要改就输出成新文件名。跑完还会校验输入文件的 sha256 没变。
+- **覆盖陌生文件要批准**。已存在且不是本工具以前写的文件，必须带
+  `--approve-overwrite`；没有它，agent 会拿到一条明确报错，而不是覆盖。
+- **每次写入都留痕**。`<workdir>/.srt-proofread/changes.jsonl` 记录输入/输出的
+  路径、大小、sha256 和批准状态。交付时把这个日志一起给用户。
+- **agent 不要加 `--interactive`**。那是给人坐在终端前用的，无人值守时会挂死。
+
+建议的目录约定：素材放只读目录，`--workdir` 指到交付目录，中间产物不会混进素材。
+详见 `references/safety.md`。
+
 ## 工作流
 
 ### 第 0 步：先看清素材
@@ -87,6 +105,7 @@ python3 scripts/audioalign.py 视频.mp4 校对版.srt \
 ```bash
 python3 scripts/srt2pr.py 对齐版.srt \
     --template 模版.prproj \
+    --workdir 交付 \
     --out 交付.prproj \
     --fps 25 --sequence-name "字幕 第一组" --join 0.2
 ```
@@ -175,6 +194,11 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 7. **换人边界不要吸附**。切点吸附遇到两侧说话人不同的地方要跳过，否则会把边界挪走。
 8. **模版里可能有旧字幕**。默认整轨替换，别叠加。
 9. **改完一定要回读校验**。文本对不上、时间偏 1 帧以上都不算完成。
+10. **别用 `--out` 指回输入文件**。会被直接拒绝——这不是 bug，是保护原始素材。
+11. **别在 agent 里加 `--interactive`**。终端等待会挂死任务；要覆盖就显式
+    `--approve-overwrite`，并在交付时说明覆盖了哪个文件。
+12. **交付目录别和素材目录混在一起**。`--workdir` 指到单独的交付目录，
+    出问题只需要看一个地方。
 
 ## 脚本清单
 
@@ -185,5 +209,14 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 | `scripts/audioalign.py` | 音频能量分析、气口吸附、拆条建议 |
 | `scripts/prproj.py` | .prproj 读写、母版探测、克隆导出、完整性校验 |
 | `scripts/srt2pr.py` | 一步到位：SRT + 模版 → 工程 + 自检 JSON |
+| `scripts/safety.py` | 写入白名单、原始素材保护、人工批准、变更日志 |
+| `scripts/leakscan.py` | 提交前泄露扫描（含 Git 历史对象、邮箱、密钥、业务名） |
 
 依赖：Python 3.8+ 标准库；音频对齐需要 `ffmpeg`（`brew install ffmpeg`）。
+
+## 交付前
+
+1. 自检 JSON 必须 `ok: true`
+2. 把 `.srt-proofread/changes.jsonl` 一并给用户（谁改了什么、原始素材有没有被动）
+3. 如果要把流程或示例推到公开仓库，先跑
+   `python3 scripts/leakscan.py . --terms 本地词表.txt`，退出码非 0 就别推

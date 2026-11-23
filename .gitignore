@@ -1,3 +1,102 @@
+# =====================================================================
+# 公开仓库只放代码和脱敏示例。
+# 真实字幕、业务词库、剪辑工程、音视频素材一律不入库 —— 下面是护栏。
+# =====================================================================
+
+# ---- 运行时垃圾 ----
 __pycache__/
 *.pyc
+*.pyo
 .DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ---- 本工具的运行产物（报告 / 变更日志 / 备份）----
+.srt-proofread/
+*.bak
+*.bak.*
+*.orig
+*.rej
+
+# ---- 字幕与扒词稿（真实项目文件）----
+*.srt
+*.ass
+*.ssa
+*.vtt
+*.sbv
+*.lrc
+*.ttml
+*.itt
+*字幕*.txt
+*唱词*.txt
+*扒词*.txt
+*校对*.txt
+*修改清单*.md
+*校对报告*.md
+*对齐报告*.md
+# 示例字幕必须留在仓库里，否则新用户没法跑通
+!examples/demo.srt
+
+# ---- 剪辑工程（含音视频素材引用、时间线、可能的客户信息）----
+*.prproj
+*.prproj.bak
+*.aep
+*.aepx
+*.mogrt
+*.prtl
+*.fcpxml
+*.xml.bak
+*.drp
+*.veg
+*.kdenlive
+*.mlt
+
+# ---- 音视频与图片素材 ----
+*.mp4
+*.mov
+*.mxf
+*.m4v
+*.avi
+*.mkv
+*.wav
+*.mp3
+*.aif
+*.aiff
+*.flac
+*.m4a
+*.bwf
+*.psd
+*.ai
+*.aep8
+
+# ---- 业务词表 / 客户与艺人名单（脱敏示例除外）----
+rules.local.json
+**/*词表*.json
+**/*词库*.json
+**/*名单*.json
+**/*名单*.csv
+**/*client*.json
+leakscan-terms.txt
+terms.local.txt
+
+# ---- 凭据 ----
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.npmrc
+.netrc
+credentials*
+secrets*
+
+# ---- 其他常见输出目录 ----
+out/
+output/
+build/
+dist/
+tmp/

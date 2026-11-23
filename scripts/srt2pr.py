@@ -11,6 +11,9 @@
 
 做完会回读工程自检，把条数/文本/时间偏差/引用完整性打成 JSON，
 方便上游 agent 判断是否可以直接交付。
+
+安全边界（见 safety.py）：输出只能落在工作目录白名单内，输入文件一律不许覆盖，
+覆盖陌生文件要人工批准，每次运行都写变更日志。
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import sys
 from typing import Optional, Sequence
 
 from prproj import Prproj, TICKS_PER_SECOND
+from safety import Guard, SafetyError, fail
 from srtlib import Cue, load_srt, save_srt, join_small_gaps, stats
 
 
@@ -43,14 +47,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--join", type=float, default=0.0, help="≤该秒数的间隔连上，默认不连")
     ap.add_argument("--keep-template-items", action="store_true")
     ap.add_argument("--save-srt", default=None, help="把处理后的字幕另存一份")
+    # --- 安全边界 ---
+    ap.add_argument(
+        "--workdir",
+        default=None,
+        help="写入白名单目录，默认取输入字幕所在目录；所有输出必须落在其中",
+    )
+    ap.add_argument(
+        "--approve-overwrite",
+        action="store_true",
+        help="批准覆盖已存在且非本工具生成的文件（无人值守时才用）",
+    )
+    ap.add_argument(
+        "--interactive",
+        action="store_true",
+        help="覆盖陌生文件时在终端当场询问（只在人操作时用，agent 别加）",
+    )
     args = ap.parse_args(argv)
+
+    # ---------- 先过安全门，任何写入之前 ----------
+    try:
+        guard = Guard.build(
+            workdir=args.workdir,
+            primary_input=args.srt,
+            inputs=[args.template, args.align] if args.align else [args.template],
+            approve=args.approve_overwrite,
+            interactive=args.interactive,
+        )
+        out_path = guard.check_output(args.out, what="工程输出")
+        srt_out = guard.check_output(args.save_srt, what="字幕输出") if args.save_srt else None
+    except SafetyError as err:
+        return fail(err, "srt2pr")
 
     cues = load_srt(args.srt)
     if not cues:
         print(json.dumps({"ok": False, "error": "SRT 里没有解析到条目"}, ensure_ascii=False))
         return 2
 
-    report = {"ok": True, "input": {"cues": len(cues), "stats": stats(cues, args.fps)}}
+    report = {
+        "ok": True,
+        "input": {"cues": len(cues), "stats": stats(cues, args.fps)},
+        "boundary": {"workdir": guard.workdir, "log": guard.log_path},
+    }
 
     if args.align:
         from audioalign import align, extract_db
@@ -73,7 +111,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pr = Prproj(args.template)
     info = pr.export(
         [(c.text, c.start, c.end) for c in cues],
-        args.out,
+        out_path,
         track_index=args.track,
         sequence_name=args.sequence_name,
         fps=args.fps,
@@ -82,7 +120,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report["export"] = info
 
     # 回读校验
-    chk = Prproj(args.out)
+    chk = Prproj(out_path)
     integrity = chk.check_integrity()
     got = chk.read_back()
     expect = [(c.text, c.start, c.end) for c in cues]
@@ -108,11 +146,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         and max_dev_frames <= 1.01
     )
     report["ok"] = bool(ok)
-    report["output"] = os.path.abspath(args.out)
+    report["output"] = out_path
 
-    if args.save_srt:
-        save_srt(cues, args.save_srt)
-        report["saved_srt"] = os.path.abspath(args.save_srt)
+    written = [out_path]
+    if srt_out:
+        save_srt(cues, srt_out)
+        report["saved_srt"] = srt_out
+        written.append(srt_out)
+
+    # ---------- 留痕 + 确认原始素材没被动 ----------
+    try:
+        log_path = guard.log("srt2pr", args=vars(args), outputs=written, note="export prproj")
+        guard.verify_inputs_untouched()
+    except SafetyError as err:
+        return fail(err, "srt2pr")
+    report["change_log"] = log_path
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if ok else 1

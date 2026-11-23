@@ -43,6 +43,33 @@ brew install ffmpeg        # macOS
 ./install.sh               # 复制到 ~/.workbuddy/skills/
 ```
 
+安装器只往已知的技能目录写（`~/.workbuddy/skills`、`~/.claude/skills`），
+**不删除目标目录里原有的任何文件**。目标已存在且不是本技能的安装点时会拒绝，
+`--force` 也是「先整目录改名备份，再装新的」。从旧版（无标记文件）升级需要
+`--force` 一次。
+
+---
+
+## 安全边界
+
+字幕常常是唯一的原始素材，所以脚本不会「尽力而为」，而是**做不到就拒绝**：
+
+| 约束 | 行为 |
+|---|---|
+| 写入白名单 | 所有输出必须落在 `--workdir` 里（默认输入字幕所在目录），写出去直接拒绝 |
+| 保护原始素材 | `--out` 指向任何输入文件时拒绝；跑完校验输入 sha256 未变 |
+| 覆盖要批准 | 已存在且非本工具生成的文件，必须 `--approve-overwrite` |
+| 全程留痕 | `<workdir>/.srt-proofread/changes.jsonl` 记录路径/大小/sha256/批准状态 |
+
+```bash
+# 素材只读，输出单独一个目录
+python3 scripts/srt2pr.py 素材/第一组.srt --template 素材/模版.prproj \
+    --workdir 交付 --out 交付/第一组.prproj
+```
+
+细节（需要覆盖哪些目录、日志长什么样、install.sh 的每一条检查）见
+[`references/safety.md`](references/safety.md)。
+
 ---
 
 ## 分步用
@@ -129,6 +156,9 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 | `--apply` | 应用安全规则 |
 | `--join` | 连上 ≤200ms 的间隙 |
 | `--fps` | 帧率，默认 25 |
+| `--workdir DIR` | 写入白名单目录，默认输入字幕所在目录 |
+| `--approve-overwrite` | 批准覆盖已存在且非本工具生成的文件 |
+| `--interactive` | 覆盖前在终端询问（人用；agent 别加） |
 
 ### audioalign.py
 
@@ -138,6 +168,9 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 | `--join` | 连上阈值，默认 0.2s，`0` 关闭 |
 | `--split-suggest` | 提示条内气口（拆条参考） |
 | `--fps` | 帧率 |
+| `--workdir DIR` | 写入白名单目录 |
+| `--approve-overwrite` | 批准覆盖陌生文件 |
+| `--interactive` | 覆盖前在终端询问 |
 
 ### srt2pr.py
 
@@ -151,6 +184,24 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 | `--join` | 连上阈值 |
 | `--keep-template-items` | 保留模版原有字幕 |
 | `--save-srt` | 另存处理后的 SRT |
+| `--workdir DIR` | 写入白名单目录，输出/存档/报告都要在里面 |
+| `--approve-overwrite` | 批准覆盖陌生文件 |
+| `--interactive` | 覆盖前在终端询问 |
+
+### leakscan.py（公开仓库前自检）
+
+| 参数 | 说明 |
+|---|---|
+| `--terms FILE` | 业务词表，一行一个（节目名、艺人名、客户名） |
+| `--no-git` | 只扫工作区，跳过历史对象 |
+| `--report MD` | 输出 Markdown 报告 |
+
+查六类：工作区文件、Git 全部历史对象（含已删除的 blob）、提交者邮箱、
+密钥模式、本机绝对路径、业务名。**退出码 1 就别推。**
+
+```bash
+python3 scripts/leakscan.py . --terms terms.local.txt
+```
 
 ---
 
@@ -207,6 +258,10 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 - 跨 Premiere 大版本（如 2020 → 2024）的模版没做过完整测试
 - 音频对齐依赖 `ffmpeg`，纯音乐/强噪声素材效果会变差
 - 不自动判断说话人。换人处的切点需要人工确认
+- **写入被限制在 `--workdir` 内**，跨目录输出要先设 `--workdir`。这是刻意的，
+  不是缺陷
+- 安装器不删文件，所以从旧版升级后目标目录里可能残留已废弃的脚本；
+  需要干净重装就手动移走旧目录或 `--force`
 
 ---
 
