@@ -1,0 +1,16 @@
+{
+  "en_map": {
+    "OK": "好",
+    "ok": "好",
+    "cue": "提",
+    "social": "社交",
+    "vlog": "视频日记",
+    "PK": "对决"
+  },
+  "works": ["作品甲", "作品乙"],
+  "groups": ["组合甲"],
+  "max_line_chars": 14,
+  "min_dur": 0.3,
+  "max_cps": 9.0,
+  "join_gap": 0.2
+}
