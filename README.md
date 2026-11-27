@@ -1,13 +1,28 @@
 # srt-proofread-prproj
 
-校对字幕，然后把字幕套进你自己的 Premiere 模版，导出 `.prproj`。
+`v3.0.0` · 更新内容见 [CHANGELOG.md](CHANGELOG.md)
 
-不用重设字体、颜色、描边、位置——脚本从你给的工程里克隆一条现成的字幕，
+校对字幕，然后输出 Premiere 能直接打开的 `.prproj`。两种用法：
+
+**A. 有字幕文件，要出工程** —— 拿你的工程当模版，克隆一条现成的字幕，
 只换文字和时间码。
 
 ```bash
 python3 scripts/srt2pr.py 字幕.srt --template 模版.prproj --out 交付.prproj
 ```
+
+**B. 字幕已经在工程里，只要校文字** —— 抽出来校，再写回原位置。
+字体、描边、位置、时间码一个字节都不动。
+
+```bash
+python3 scripts/prtext.py 工程.prproj --workdir 交付        # 抽出文字
+python3 scripts/prwrite.py 工程.prproj --changes 改动.json \
+        --out 交付/校对版.prproj --workdir 交付               # 写回去
+python3 scripts/prverify.py 交付/校对版.prproj \
+        --template 工程.prproj --against 工程.prproj          # 交付前校验
+```
+
+两条路线的校对规则完全一样，差的只是怎么读进来、怎么写回去。
 
 ---
 
@@ -72,7 +87,71 @@ python3 scripts/srt2pr.py 素材/第一组.srt --template 素材/模版.prproj \
 
 ---
 
-## 分步用
+## 直接改已有工程（路线 B）
+
+字幕已经在 Premiere 里做好了，只是文字要校。这时候不要重做工程。
+
+### 1. 抽出文字
+
+```bash
+python3 scripts/prtext.py 工程.prproj --workdir 交付
+```
+
+得到 `字幕清单.txt`（`序号<TAB>起-止<TAB>文本`）和 `字幕清单.json`。
+摘要会报：条目数、时间范围、**有多少条文字靠 `BinaryHash` 引用别人**、
+读不到文字的有几条、重复文本有几种。
+
+### 2. 改清单
+
+落成「序号 → 新文本」，`from` 写原文可以让脚本核对版本：
+
+```json
+{"changes": [
+  {"no": 31, "text": "你好 姐姐", "from": "Hello 姐姐", "reason": "英文改中文"}
+]}
+```
+
+### 3. 写回
+
+```bash
+python3 scripts/prwrite.py 工程.prproj --changes 改动.json \
+    --out 交付/校对版.prproj --workdir 交付 --report 交付/修改清单.md
+```
+
+默认 dry-run。末尾会打印回读结果，**三项都是 0 才加 `--apply`**：
+
+```
+回读：文本不符 0｜读不到文字 0｜时间码变化 0
+```
+
+只碰四处：源文本 base64、`InstanceName`、`SubClip/Name`、`MasterClip/Name`。
+共用同一段文字的其它条目会先被拆开独立，不会被一起改掉。
+
+### 4. 交付前校验
+
+```bash
+python3 scripts/prverify.py 交付/校对版.prproj \
+    --template 工程.prproj --against 工程.prproj --md 交付/校验.md
+```
+
+七项全过才算完成：引用完整性、文本可读、版本/画幅/帧率、逐对象字节、
+样式字节（字体/字号/描边）、字体集合、位置分布。
+
+其中「样式字节」没法替代 —— 字体和描边编码在 base64 blob 的二进制里，
+XML 里看不到。只比 XML 属性是查不出字体被换的。
+
+### 只有 FCP7 XML 时
+
+```bash
+python3 scripts/xmltext.py 唱词.xml --extract --txt 清单.txt
+python3 scripts/xmltext.py 唱词.xml --edits 改动.tsv -o 交付/唱词_校对.xml
+```
+
+写回时会把 `clipitem/name` 和图形层名一起改掉，导回 PR 后标签和画面对得上。
+
+---
+
+## 从字幕文件到工程（路线 A）
 
 ### 1. 校对文字
 
@@ -111,6 +190,19 @@ python3 scripts/srt2pr.py 对齐版.srt \
 python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.prproj \
     --align 视频.mp4 --join 0.2 --save-srt 对齐版.srt
 ```
+
+### 3.5 走 XML 交付时，同步剪辑名（可选）
+
+Premiere 里改完字、导出 FCP7 XML 后，`clipitem/name` 往往还是旧字——
+因为 name 是剪辑名，改文字不会改它。真正渲染的字在 `源文本` 参数的 base64 里。
+
+```bash
+python3 scripts/syncnames.py 唱词.xml -o 交付/唱词_name同步.xml
+```
+
+脚本以 base64 源文本为唯一真源，反写 `clipitem/name` 和图形层名。
+只动 name，时间码/样式/源文本不动，默认不覆盖输入，可重复跑。
+只带 `<hash>` 的条目会用同 hash 的其它条目反查文本。
 
 ### 4. 看自检结果
 
@@ -188,6 +280,64 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 | `--approve-overwrite` | 批准覆盖陌生文件 |
 | `--interactive` | 覆盖前在终端询问 |
 
+### syncnames.py
+
+| 参数 | 说明 |
+|---|---|
+| `xml` | 输入的 FCP7 XML（必填） |
+| `-o, --out` | 输出路径，默认 `<输入>_name同步.xml`，不允许等于输入 |
+| `--limit-preview` | 终端里最多打印多少条差异样例，默认 10 |
+
+退出码：0 全部对齐；2 有条目定位不到文本（原样保留并列出）。
+
+### prtext.py
+
+| 参数 | 说明 |
+|---|---|
+| `prproj` | 要读的工程（必填） |
+| `--track N` | 只取第几条视频轨（0 起） |
+| `--txt / --json` | 清单输出路径，默认 `<工作目录>/字幕清单.txt / .json` |
+| `--quiet` | 只打摘要，不打印全部条目 |
+
+退出码：0 正常；2 有条目读不到文字（会列出序号）。
+
+### prwrite.py
+
+| 参数 | 说明 |
+|---|---|
+| `prproj` | 源工程（必填，不会被修改） |
+| `--changes / --edits` | 改动 JSON 或 TSV（二选一，必填） |
+| `--out` | 输出工程（必填，不能等于输入） |
+| `--report` | 修改清单 Markdown |
+| `--apply` | 真的写文件，默认 dry-run |
+| `--workdir DIR` | 写入白名单目录 |
+| `--approve-overwrite` | 批准覆盖陌生文件 |
+
+退出码：0 成功；3 清单/工程对不上；4 回读校验没过（不写文件）。
+
+### prverify.py
+
+| 参数 | 说明 |
+|---|---|
+| `prproj` | 要校验的输出工程（必填） |
+| `--template` | 模版工程，校验版本号/画幅/帧率/字体/位置 |
+| `--against` | 对照工程，做逐对象字节与样式字节比对（最严格） |
+| `--md / --json` | 报告输出路径 |
+| `--max-pos-drift` | 位置允许偏移，默认 0.02（占画面比例） |
+
+退出码：0 全过；5 有不一致；2 没给 `--template` 无法校验。
+
+### xmltext.py
+
+| 参数 | 说明 |
+|---|---|
+| `xml` | FCP7 XML（必填） |
+| `--extract` | 列出每条字幕的序号/时间码/文本 |
+| `--changes / --edits` | 改动 JSON 或 TSV |
+| `-o, --out` | 输出 XML（改文本时必填） |
+| `--no-sync-names` | 只改文本，不同步两处 name |
+| `--txt` | `--extract` 的输出文件 |
+
 ### leakscan.py（公开仓库前自检）
 
 | 参数 | 说明 |
@@ -234,6 +384,10 @@ python3 scripts/leakscan.py . --terms terms.local.txt
 **这个偏移在不同工程里不一样**（实测 556 和 536），所以脚本靠「已知原文」
 反查位置，不硬编码任何偏移或对象 ID。
 
+字体名、字号、描边、填充也都在同一段 blob 里，XML 属性里看不到。所以
+「字体有没有被换」只能剥掉 blob 里的文本做指纹比对（`prverify.py` 的
+样式字节检查）。另外 blob 总长必须是 4 的倍数，改完文字要补零对齐。
+
 克隆时给链上每个对象分配新 ID，替换引用，改时间和文本，旧条目连对象一起删。
 详见 [`references/prproj-internals.md`](references/prproj-internals.md)。
 
@@ -258,6 +412,8 @@ python3 scripts/leakscan.py . --terms terms.local.txt
 - 跨 Premiere 大版本（如 2020 → 2024）的模版没做过完整测试
 - 音频对齐依赖 `ffmpeg`，纯音乐/强噪声素材效果会变差
 - 不自动判断说话人。换人处的切点需要人工确认
+- **`prwrite.py` 只能改文字**，不能增删条目。要增删就在 Premiere 里做，
+  或者走路线 A 用 `srt2pr.py` 重建整轨
 - **写入被限制在 `--workdir` 内**，跨目录输出要先设 `--workdir`。这是刻意的，
   不是缺陷
 - 安装器不删文件，所以从旧版升级后目标目录里可能残留已废弃的脚本；

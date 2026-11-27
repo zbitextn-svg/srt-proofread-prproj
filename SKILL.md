@@ -1,31 +1,48 @@
 ---
 name: srt-proofread-prproj
-description: 校对 SRT/CSV 字幕唱词并导出 Premiere Pro 工程（.prproj）。当用户给出字幕文件要求校对（错别字、语气词、英文、数字、书名号、断句、时间轴对不齐），或要求「把字幕做成 PR 工程 / 套用这个模版工程 / 导出 prproj」时使用。核心能力：逐条给改动依据的校对报告、用音频能量把切点吸附到气口、把相邻字幕 ≤5 帧的间隙直接连上、从用户自己的 prproj 里克隆字幕样式生成新工程（不改字体不改位置）。关键词：字幕校对、唱词、SRT、时间轴对齐、气口、prproj、Premiere 工程、字幕模版、subtitle proofread, srt to premiere, prproj export。
+description: 校对字幕唱词并输出 Premiere Pro 工程（.prproj）。两种入场方式：①给 SRT/CSV，校对后套用模版工程生成新工程；②直接给 .prproj 或 FCP7 XML，就地改文字、样式和时间码一字节不动。当用户要求校对字幕（错别字、语气词、英文、数字、书名号、断句、时间轴对不齐）、「把这个工程里的字幕校一下」、「按这个模版出片」、「导出 prproj / XML」，或强调「输出前核对模版版本号和字体描边位置」时使用。核心能力：逐条给改动依据、音频气口吸附、从用户自己的模版克隆字幕样式、改字时先拆分共用的图形参数、交付前逐对象与逐字节校验模版一致性。关键词：字幕校对、唱词、SRT、时间轴对齐、气口、prproj、Premiere 工程、字幕模版、FCP7 XML、字体校验、subtitle proofread, srt to premiere, prproj export, premiere template check.
 ---
 
-# SRT 字幕校对 → Premiere 工程
+# 字幕校对 → Premiere 工程
 
-把一份字幕（SRT/CSV/扒词稿）校到可以播，再套用用户自己的 Premiere 模版生成
-`.prproj`。样式不重设，只从模版里克隆一条现成的字幕条目，改文本和出入点，
-所以字体、颜色、描边、阴影、位置、动画全部原样继承。
+`v3.0.0` · 变更记录见 `CHANGELOG.md`
+
+把一份字幕校到可以播，然后输出成 Premiere 能直接打开的工程。样式不重设：
+要么从用户给的模版里克隆一条现成的字幕条目，要么在用户给的工程里就地改字。
+两种做法都不碰字体、颜色、描边、阴影、位置和动画。
 
 ## 什么时候用
 
 - 用户给一份 SRT，说「校对」「看看有没有错」「对一下说话」
+- 用户给一个 `.prproj`，说「这里面的字幕帮我校一遍」
+- 用户给一个 FCP7 XML，说「这是待校对的唱词」
 - 用户说「对齐一下时间轴」「字幕和声音差了几帧」
 - 用户给一个 `.prproj` 模版，说「把这份字幕套进工程」「导成 PR 工程」
-- 用户抱怨「字幕一会儿上一会儿下，画面在跳」
+- 用户强调「输出前核对模版版本号、字体、描边、位置」
 
 ## 交付物
 
 一次完整任务至少要产出：
 
-1. `xxx_校对版.srt` — 改好的字幕
+1. `xxx_校对版.srt`（或清单）— 改好的字幕
 2. `xxx_修改清单.md` — 每处改动：条目号 + 时间码 + 原文 + 改后 + 依据
-3. `xxx.prproj` — 套好样式的工程
-4. 校验输出 — 条数、文本一致性、时间偏差、引用完整性
+3. `xxx.prproj` — 套好样式或就地改好的工程
+4. `xxx_校验.md` — prverify 的报告，证明版本/画幅/字体/样式没被改动
 
-**永远不要只交一个 SRT。** 没有修改清单，用户无法确认你改了什么。
+**永远不要只交一个 SRT，也不要跳过第 4 项。** 没有校验报告，用户无法确认样式没被改坏。
+
+## 先判断走哪条路线
+
+看用户手上是什么，再决定用哪套脚本。两条路线的「校对」环节完全一样，
+差的只是「怎么读进来」和「怎么写回去」。
+
+| 手上是 | 读进来 | 校对 | 写回去 |
+|---|---|---|---|
+| `.prproj` 工程 | `prtext.py` | 改清单 | `prwrite.py` 就地改，样式零改动 |
+| FCP7 `.xml` | `xmltext.py --extract` | 改清单 | `xmltext.py --changes`，或转成 SRT 走路线 A |
+| `.srt` / `.csv` | `proofread.py` | 改 SRT | `srt2pr.py` 从模版克隆出新工程 |
+
+**输出前一律要过 `prverify.py`**，见文末「交付前」。这条没有例外。
 
 ## 权限边界（先读这条）
 
@@ -45,7 +62,9 @@ description: 校对 SRT/CSV 字幕唱词并导出 Premiere Pro 工程（.prproj�
 建议的目录约定：素材放只读目录，`--workdir` 指到交付目录，中间产物不会混进素材。
 详见 `references/safety.md`。
 
-## 工作流
+## 路线 A：从字幕文件到工程（SRT / CSV 入场）
+
+手上有 SRT 或扒词稿时走这条。校对 → 对时间轴 → 从模版克隆出新工程。
 
 ### 第 0 步：先看清素材
 
@@ -122,6 +141,31 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 `--track N` 指定模版里第几条视频轨（0 起），不填就自动找第一条带文本滤镜的轨。
 `--keep-template-items` 保留模版原有字幕（默认替换）。
 
+### 第 4.5 步：走 XML 交付时，同步剪辑名
+
+一条 Premiere 字幕导出成 FCP7 XML 后，文字存在三处：
+
+| 位置 | 是什么 | 在 Premiere 改字后 |
+|---|---|---|
+| `clipitem/name` | 剪辑名，时间线上的标签 | 不变 |
+| `effect(GraphicAndType)/name` | 图形层的名字 | 不变 |
+| `源文本` 参数的 base64 value | 真正渲染出来的字 | 变 |
+
+所以「在 Premiere 里改完字 → 导出 XML」之后，十有八九会看到 name 还是旧字。
+`syncnames.py` 以 base64 源文本为唯一真源，反写前两处：
+
+```bash
+python3 scripts/syncnames.py 唱词.xml -o 交付/唱词_name同步.xml
+```
+
+- 只动 name，时间码、样式、源文本一个字节不碰；默认不覆盖输入
+- 只带 `<hash>`、没有 value 的条目（同文本复用图形样式），用同 hash 的其它条目反查文本
+- 幂等：跑第二遍报 0 改动
+- 退出码 2 表示有条目定位不到文本，会逐条列出来，原样保留
+
+记住：name 只是标签，不影响画面。画面文字永远以 base64 源文本为准，
+两者打架时以源文本为底本。
+
 ### 第 5 步：自检，别靠感觉
 
 `srt2pr.py` 末尾会回读工程并打印 JSON，必须全部满足才算完成：
@@ -142,6 +186,121 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 
 `ok: false` 就查这几个字段，别直接交付。生成的文件还能用
 `Prproj(path).check_integrity()` 单独复查。
+
+## 路线 B：拿到工程直接改（prproj / XML 入场）
+
+用户已经把字幕做进 Premiere 工程了，只是文字要校。这时候**不要重做工程** ——
+把文字抽出来校，再写回原工程的同一个位置，样式、时间码、动画、对象结构全部保留。
+
+### 第 1 步：把文字抽出来
+
+```bash
+python3 scripts/prtext.py 工程.prproj --workdir 交付
+```
+
+输出 `字幕清单.txt`（`序号<TAB>起-止<TAB>文本`）和 `字幕清单.json`。
+摘要会告诉你四件事：
+
+- **条目数 / 轨道 / 时长范围**
+- **自闭合参数有几条** —— 文字靠 `BinaryHash` 引用别人，不是自己存的
+- **读不到文字的有几条** —— 有就是异常，先查清楚再往下走
+- **重复文本** —— 同样的字出现多次，要听音频判断，不要自动删
+
+抽完先扫一眼清单：`Hello`、`NO`、作品名缺书名号这类，和 SRT 路线一样处理。
+
+### 第 2 步：校对
+
+校对口径和路线 A 完全一样，见下面「校对口径」。改的是 `字幕清单.txt`，
+不是工程。每条改动落成「序号 → 新文本」：
+
+```json
+{"changes": [
+  {"no": 31, "text": "你好 姐姐", "from": "Hello 姐姐", "reason": "英文改中文"},
+  {"no": 394, "text": "“某某某”是我心中的", "from": "某某某是我心中的NO", "reason": "NO 挪到下一句"}
+]}
+```
+
+`from` 建议写：脚本会拿它和工程里的原文核一遍，对不上就拒绝执行，
+防止清单和工程不是同一版。也可以用 TSV：`序号<TAB>新文本<TAB>依据`。
+
+### 第 3 步：写回工程
+
+先 dry-run，看清楚改哪些：
+
+```bash
+python3 scripts/prwrite.py 工程.prproj --changes 改动.json \
+    --out 交付/工程_校对版.prproj --workdir 交付
+```
+
+会打印「#序号 时间码 原文 → 改后」，末尾一行是回读结果：
+
+```
+回读：文本不符 0｜读不到文字 0｜时间码变化 0
+```
+
+三个都是 0 才加 `--apply`。任何一个不为 0，脚本拒绝写文件（退出码 4）。
+
+写回时只碰四个地方：源文本的 base64、`InstanceName`、`SubClip/Name`、
+`MasterClip/Name`。而且：
+
+- **先拆分共用引用**。工程里同一段字可能只存一份，其他条目用
+  `<StartKeyframeValue BinaryHash="X"/>` 空标签指着它。直接改那个带值条目，
+  其他条目会跟着变，或者更糟 —— 指着一段已经不存在的值，画面变空白。
+  脚本会先把引用者各自复制一份旧内容独立出去，再改目标条目。
+- **共用 hash 换新值**。改完那条用新 hash，别人的旧内容原样保留。
+- **名字共用时不动**。同一个 `MasterClip` 被多条字幕引用时，改名会串，
+  脚本跳过它，只改图层名。
+- **4 字节对齐**。blob 长度必须是 4 的倍数，尾部补 `\x00`；头部可能还有一个
+  「总长度−12」的 u32，只在它原来就对得上时才更新（不同模版不一定有）。
+
+顺手出一份清单：`--report 交付/修改清单.md`。
+
+### 第 4 步：交付前校验（必须）
+
+```bash
+python3 scripts/prverify.py 交付/工程_校对版.prproj \
+    --template 工程.prproj --against 工程.prproj \
+    --md 交付/校验.md --json 交付/校验.json
+```
+
+`--template` 是「样式和版本该长什么样」，`--against` 是「改之前长什么样」。
+同一个工程就地改字的场景，两个都指向原工程。校验七项：
+
+| 项 | 查什么 | 靠什么 |
+|---|---|---|
+| 引用完整性 | 悬空引用、重复对象 ID | 对象图 |
+| 文本可读 | 每条字幕都读得出字 | blob 解码 |
+| 版本/画幅/帧率 | `PremiereData` / `Project` / `Sequence` 三个版本号 + `FrameRect` + 帧率必须和模版完全相等 | XML |
+| 逐对象字节比对 | 抹掉源文本、图层名、片段名后，每个对象必须逐字节相同 | XML sha1 |
+| 样式字节 | 同一条目改字前后，blob 里除文本外**一个字节都不能变** | blob sha1 |
+| 字体集合 | 输出的字体不许超出模版用过的 | blob 里的字体名 |
+| 位置分布 | 字幕位置不许整体被挪走 | 位置参数 |
+
+「样式字节」是整套校验的核心。字体名、字号、描边宽度、填充、对齐、行距
+全都编码在 base64 blob 的二进制里，**XML 里根本看不到**。只比 XML 属性查不出
+字体被换；只有把 blob 里「长度头 + 文本 + 尾部补零」剥掉、剩下那段做指纹，
+才既查得出换字体，也查得出改描边。
+
+失败会指出具体对象：`对象 6789（ArbVideoComponentParam）内容有非预期改动`。
+退出码：0 通过、5 不一致、2 缺 `--template` 无法校验。
+
+没有 `--against` 时，样式改成「集合比对」——输出的每一套样式指纹都必须来自
+模版。弱一些，但仍能抓出「字体被换成了模版没用过的字体」。
+
+### 第 5 步：XML 入场怎么做
+
+如果用户手上是 FCP7 XML 而不是工程：
+
+```bash
+python3 scripts/xmltext.py 唱词.xml --extract --txt 清单.txt
+python3 scripts/xmltext.py 唱词.xml --edits 改动.tsv -o 交付/唱词_校对.xml
+```
+
+写回时会同时改掉 `clipitem/name` 和 `GraphicAndType/effect/name`
+（这两处 Premiere 自己不同步，见第 4.5 步），导回 PR 后时间轴标签和画面对得上。
+没有 value 只有 `<hash>` 的条目会写成 `<value>`，从此独立。
+
+要交付 `.prproj`，就从 XML 导出的文本走路线 A 的 `srt2pr.py` 套模版生成。
 
 ## 校对口径
 
@@ -201,6 +360,19 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
     `--approve-overwrite`，并在交付时说明覆盖了哪个文件。
 12. **交付目录别和素材目录混在一起**。`--workdir` 指到单独的交付目录，
     出问题只需要看一个地方。
+13. **别直接改「带值」的那条字幕**。它可能是同组多条共用的定义，改一处会串一片，
+    甚至让引用者变空白。先用 `prtext.py` 看自闭合条数，再用 `prwrite.py`
+    走「先拆分再改」的流程。
+14. **别指望在 XML 里看到字体和描边**。它们在 base64 blob 的二进制里。
+    要校验字体有没有被换，只能剥 blob 做指纹（`prverify.py` 的「样式字节」）。
+15. **三个版本号都要比**。`PremiereData`、`Project`、`Sequence` 是三个独立字段，
+    只比一个会出现「版本对得上但工程打不开」。
+16. **blob 长度必须是 4 的倍数**。改完文字不补 `\x00` 对齐，Premiere 可能读不出这条。
+17. **`--template` 和 `--against` 不是一回事**。前者是「应该长什么样」，
+    后者是「改之前长什么样」。就地改字两个都给原工程；从模版生成新工程时
+    `--against` 给不出来，就别给，样式会退化成集合比对。
+18. **别用 `prwrite.py` 删条目或加条目**。它只改文字。要增删条目，在 PR 里做，
+    或者走路线 A 用 `srt2pr.py` 重建。
 
 ## 脚本清单
 
@@ -211,6 +383,11 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 | `scripts/audioalign.py` | 音频能量分析、气口吸附、拆条建议 |
 | `scripts/prproj.py` | .prproj 读写、母版探测、克隆导出、完整性校验 |
 | `scripts/srt2pr.py` | 一步到位：SRT + 模版 → 工程 + 自检 JSON |
+| `scripts/prtext.py` | 从工程抽字幕文本与时间码（含 hash 回填、自闭合统计） |
+| `scripts/prwrite.py` | 在工程里就地改文字（先拆分共用引用，再改，再回读） |
+| `scripts/prverify.py` | 交付前校验：版本/画幅/帧率、逐对象字节、样式字节、字体、位置 |
+| `scripts/syncnames.py` | 以画面真实文本为准，同步 XML 里各条目的 name |
+| `scripts/xmltext.py` | FCP7 XML 的文本提取与改写（改文本时同步两处 name） |
 | `scripts/safety.py` | 写入白名单、原始素材保护、人工批准、变更日志 |
 | `scripts/leakscan.py` | 提交前泄露扫描（含 Git 历史对象、邮箱、密钥、业务名） |
 
@@ -218,7 +395,10 @@ python3 scripts/srt2pr.py 校对版.srt --template 模版.prproj --out 交付.pr
 
 ## 交付前
 
-1. 自检 JSON 必须 `ok: true`
-2. 把 `.srt-proofread/changes.jsonl` 一并给用户（谁改了什么、原始素材有没有被动）
-3. 如果要把流程或示例推到公开仓库，先跑
+1. **路线 A**：`srt2pr.py` 的自检 JSON 必须 `ok: true`
+2. **路线 B**：`prverify.py` 必须退出码 0，且 `校验.md` 里七项全「通过」
+3. 把 `.srt-proofread/changes.jsonl` 一并给用户（谁改了什么、原始素材有没有被动）
+4. 亲口告诉用户三件事：改了多少处、校验六/七项是不是全过、原始素材有没有被改
+   （`verify_inputs_untouched` 已经校验过 sha256，直接说结论）
+5. 如果要把流程或示例推到公开仓库，先跑
    `python3 scripts/leakscan.py . --terms 本地词表.txt`，退出码非 0 就别推

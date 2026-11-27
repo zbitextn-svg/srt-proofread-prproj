@@ -14,9 +14,10 @@ set -euo pipefail
 
 MARKER=".srt-proofread-installed"
 SKILL_NAME="srt-proofread-prproj"
-VERSION="2"
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="$(cat "$SRC/VERSION" 2>/dev/null | tr -d '[:space:]')"
+VERSION="${VERSION:-unknown}"
 
 FORCE=0
 if [ "${1:-}" = "--force" ]; then
@@ -77,7 +78,7 @@ EOF
 fi
 
 # ---------------------------------------------------------------- 2. 检查源
-for item in SKILL.md scripts references examples; do
+for item in SKILL.md VERSION scripts references examples; do
   [ -e "$SRC/$item" ] || die "源目录缺少 ${item}，仓库可能不完整"
 done
 for py in "$SRC"/scripts/*.py; do
@@ -108,7 +109,7 @@ fi
 
 # ---------------------------------------------------------------- 4. 拷贝（只写，不删）
 mkdir -p "$DEST"
-for f in SKILL.md README.md LICENSE; do
+for f in SKILL.md README.md LICENSE VERSION CHANGELOG.md; do
   [ -f "$SRC/$f" ] && cp "$SRC/$f" "$DEST/"
 done
 cp -R "$SRC/scripts" "$SRC/references" "$SRC/examples" "$DEST/"

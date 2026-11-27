@@ -100,6 +100,7 @@ class Prproj:
             objs.append(Obj(oid, tag, m.start(), end, kind, selfclose))
         self._objs = objs
         self._by_id = {o.oid: o for o in objs if o.is_id}
+        self._by_obj = {o.oid: o for o in objs}
         self._by_tag = {}
         for o in objs:
             self._by_tag.setdefault(o.tag, []).append(o)
@@ -113,6 +114,13 @@ class Prproj:
 
     def block(self, oid: str) -> str:
         o = self._by_id.get(oid)
+        if o is None:
+            raise KeyError("no object %s" % oid)
+        return self.xml[o.start:o.end]
+
+    def block_any(self, oid: str) -> str:
+        """按 ObjectID 或 ObjectUID 取块。Sequence/Track 这类对象只有 UID。"""
+        o = self._by_obj.get(oid)
         if o is None:
             raise KeyError("no object %s" % oid)
         return self.xml[o.start:o.end]
@@ -278,13 +286,26 @@ class Prproj:
             return str(n)
 
         # 母版各块的原文
-        ti_b, chain_b, filt_b, sub_b = (
-            self.block(tpl.ti),
-            self.block(tpl.chain),
-            self.block(tpl.filter),
-            self.block(tpl.subclip),
-        )
-        param_blocks = {pid: self.block(pid) for pid in tpl.params}
+        ti_b, chain_b, sub_b = self.block(tpl.ti), self.block(tpl.chain), self.block(tpl.subclip)
+
+        # 链上**所有**组件都要克隆。除了文本滤镜，还可能挂着 Vector Motion /
+        # 不透明度之类的组件；只克隆文本滤镜的话，旧对象删掉后新条目会指向空号
+        # （Premiere 打开报"缺少组件"，回读校验报 dangling ref）。
+        comp_ids = [
+            m.group(1)
+            for m in re.finditer(r'<Component Index="\d+" ObjectRef="(\d+)"/>', chain_b)
+        ]
+        if tpl.filter not in comp_ids:
+            comp_ids.append(tpl.filter)
+        comp_b = {cid: self.block(cid) for cid in comp_ids}
+        comp_params = {
+            cid: re.findall(r'<Param Index="\d+" ObjectRef="(\d+)"/>', comp_b[cid])
+            for cid in comp_ids
+        }
+        param_blocks: Dict[str, str] = {}
+        for cid in comp_ids:
+            for pid in comp_params[cid]:
+                param_blocks[pid] = self.block(pid)
 
         # 旧条目：默认清空整条轨（只留目标轨，其他轨不动）
         old_item_count = len(
@@ -310,15 +331,15 @@ class Prproj:
             t1 = int(round(f1 * ticks_per_frame))
 
             id_map: Dict[str, str] = {}
-            ti_new, chain_new, filt_new, sub_new = alloc(), alloc(), alloc(), alloc()
+            ti_new = alloc()
             id_map[tpl.ti] = ti_new
-            id_map[tpl.chain] = chain_new
-            id_map[tpl.filter] = filt_new
-            id_map[tpl.subclip] = sub_new
-            param_new: Dict[str, str] = {}
-            for pid in tpl.params:
-                param_new[pid] = alloc()
-                id_map[pid] = param_new[pid]
+            id_map[tpl.chain] = alloc()
+            id_map[tpl.subclip] = alloc()
+            for cid in comp_ids:
+                id_map[cid] = alloc()
+            for cid in comp_ids:
+                for pid in comp_params[cid]:
+                    id_map[pid] = alloc()
 
             # 1) TrackItem：替换时间与引用
             b = _remap(ti_b, id_map)
@@ -329,18 +350,22 @@ class Prproj:
             # 2) 组件链：引用替换即可
             new_blocks.append(_remap(chain_b, id_map))
 
-            # 3) 文本滤镜：引用 + InstanceName
-            b = _remap(filt_b, id_map)
-            b = _set_instance_name(b, text)
-            new_blocks.append(b)
+            # 3) 逐个组件：文本滤镜顺手改 InstanceName，其余原样
+            for cid in comp_ids:
+                cb = _remap(comp_b[cid], id_map)
+                if cid == tpl.filter:
+                    cb = _set_instance_name(cb, text)
+                new_blocks.append(cb)
 
-            # 4) 参数：只有文本那个改 blob，其余原样克隆
-            for pid in tpl.params:
-                pb = param_blocks[pid]
-                if pid == tpl.text_param:
-                    new_blob = _replace_text_blob(tpl.blob, tpl.text_offset, tpl.text_len, text)
-                    pb = _set_blob(pb, new_blob)
-                new_blocks.append(_remap(pb, {pid: param_new[pid]}))
+                # 4) 该组件的参数：只有承载文本的那个改 blob
+                for pid in comp_params[cid]:
+                    pb = param_blocks[pid]
+                    if pid == tpl.text_param:
+                        new_blob = _replace_text_blob(
+                            tpl.blob, tpl.text_offset, tpl.text_len, text
+                        )
+                        pb = _set_blob(pb, new_blob)
+                    new_blocks.append(_remap(pb, id_map))
 
             # 5) SubClip：引用替换
             new_blocks.append(_remap(sub_b, id_map))
@@ -350,6 +375,12 @@ class Prproj:
         # 写轨道条目列表
         new_track_xml = self._rewrite_track_items(track, item_refs)
         self.xml = new_track_xml
+
+        # 模版的工作区常常只覆盖它自己那几秒，条目一多就出现"序列只有 60 秒"的错觉。
+        # 把工作区终点拉到最后一个条目的出点（只放大，不缩小）。
+        last_ticks = int(round(max(e for _, _, e in entries) * fps * ticks_per_frame)) \
+            if entries else 0
+        self.xml = _bump_workout(self.xml, last_ticks)
 
         # 删旧对象（重新索引后按 ID 删除）
         self._index()
@@ -363,9 +394,10 @@ class Prproj:
         payload = "".join("\n" + b.lstrip("\n") for b in new_blocks)
         self.xml = self.xml[:insert_at] + payload + self.xml[insert_at:]
 
-        # 序列名
+        # 序列名 + 抹掉模版里残留的外机路径
         if sequence_name:
             self.xml = _rename_sequence(self.xml, sequence_name)
+        self.xml = _sanitize_local_paths(self.xml)
 
         self._index()
         self._write(out_path)
@@ -622,8 +654,19 @@ def _set_instance_name(filt_block: str, text: str) -> str:
     return filt_block
 
 
+def _bump_workout(xml: str, ticks: int) -> str:
+    """把序列工作区终点至少拉到 ticks（只放大不缩小）。"""
+    m = re.search(r"<MZ.WorkOutPoint>(-?\d+)</MZ.WorkOutPoint>", xml)
+    if not m or ticks <= 0:
+        return xml
+    cur = int(m.group(1))
+    if ticks <= cur:
+        return xml
+    return xml[: m.start(1)] + str(ticks) + xml[m.end(1) :]
+
+
 def _rename_sequence(xml: str, name: str) -> str:
-    """给第一个 Sequence 改名（找不到就原样返回）。"""
+    """给第一个 Sequence 改名；工程面板里同名的条目一起改，免得两处名字不一样。"""
     m = re.search(r'\n\t<Sequence ObjectUID="[^"]+"', xml)
     if not m:
         return xml
@@ -631,15 +674,39 @@ def _rename_sequence(xml: str, name: str) -> str:
     if end == -1:
         return xml
     seg = xml[m.start():end]
+    esc = _xml_escape(name)
+    old_name = None
+    nm = re.search(r"<Name>([^<]*)</Name>", seg)
+    if nm and nm.group(1) != name:
+        old_name = nm.group(1)
     if "<Name>" in seg:
-        seg2 = re.sub(r"<Name>.*?</Name>", "<Name>%s</Name>" % _xml_escape(name), seg, count=1, flags=re.S)
+        seg2 = re.sub(r"<Name>.*?</Name>", "<Name>%s</Name>" % esc, seg, count=1, flags=re.S)
     else:
         seg2 = seg.replace(
             '<Node Version="1">',
-            '<Name>%s</Name>\n\t\t<Node Version="1">' % _xml_escape(name),
+            '<Name>%s</Name>\n\t\t<Node Version="1">' % esc,
             1,
         )
-    return xml[:m.start()] + seg2 + xml[end:]
+    xml = xml[:m.start()] + seg2 + xml[end:]
+    if old_name:
+        xml = xml.replace("<Name>%s</Name>" % _xml_escape(old_name), "<Name>%s</Name>" % esc)
+    return xml
+
+
+def _sanitize_local_paths(xml: str) -> str:
+    """抹掉工程里记着的"上次打开路径"。模版常常来自别人的机器，
+    里面会留着 <用户目录>/Desktop/... 这种绝对路径，既暴露信息又会让 PR 报路径失效。"""
+    pat = re.compile(
+        r"<project\.settings\.lastknowngoodprojectpath>([^<]*)</project\.settings\.lastknowngoodprojectpath>"
+    )
+
+    def repl(m):
+        v = m.group(1)
+        if re.search(r"(/Users/|/home/|[A-Za-z]:\\\\Users\\\\|/Volumes/|/private/|/tmp/)", v):  # leakscan:ignore
+            return "<project.settings.lastknowngoodprojectpath></project.settings.lastknowngoodprojectpath>"
+        return m.group(0)
+
+    return pat.sub(repl, xml)
 
 
 def _xml_escape(s: str) -> str:
